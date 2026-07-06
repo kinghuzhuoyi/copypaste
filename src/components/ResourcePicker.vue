@@ -27,7 +27,7 @@ async function loadResources() {
   }
   loading.value = true
   try {
-    const res = await getSourceResources({ sourceVersionId: props.source.versionId, keyword: keyword.value })
+    const res = await getSourceResources({ sourceProcessKey: props.source.flowId, sourceVersionId: props.source.versionId, keyword: keyword.value })
     groups.value = res.groups
     resourceMap.value = Object.fromEntries(res.groups.flatMap((group) => group.items.map((item) => [item.resourceId, item])))
     selected.value = selected.value.filter((id) => resourceMap.value[id])

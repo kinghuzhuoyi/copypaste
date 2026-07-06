@@ -3,6 +3,9 @@ const sleep = (ms = 120) => new Promise((resolve) => setTimeout(resolve, ms))
 const env = import.meta.env || {}
 const API_BASE_URL = env.VITE_RESOURCE_COPY_API_BASE_URL || ''
 const USE_MOCK_API = env.VITE_USE_MOCK_API !== 'false'
+const projectNameById = new Map()
+const flowNameByKey = new Map()
+const versionProcessKeyByVersion = new Map()
 
 async function request(path, { method = 'GET', query, body } = {}) {
   if (USE_MOCK_API) return mockRequest(path, { method, query, body })
@@ -11,7 +14,7 @@ async function request(path, { method = 'GET', query, body } = {}) {
   Object.entries(query || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value)
   })
-  const response = await fetch(url.toString(), {
+const response = await fetch(url.toString(), {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
@@ -34,6 +37,19 @@ const targetContext = {
     sceneId: 'S3',
     sceneName: '生产场景',
   },
+}
+
+function getLocalCopyContext() {
+  return {
+    target: {
+      ...targetContext.target,
+      projectName: env.VITE_TARGET_PROJECT_NAME || targetContext.target.projectName,
+      flowCode: env.VITE_TARGET_PROCESS_KEY || targetContext.target.flowCode,
+      flowName: env.VITE_TARGET_PROCESS_NAME || targetContext.target.flowName,
+      versionNo: env.VITE_TARGET_PROCESS_VERSION || targetContext.target.versionNo,
+      sceneName: env.VITE_TARGET_SCENE_NAME || targetContext.target.sceneName,
+    },
+  }
 }
 
 const projects = [
@@ -511,7 +527,7 @@ function countLineageActions(nodes = [], counts = { COPY: 0, REUSE: 0, RENAME: 0
   return counts
 }
 
-function toFrontendPlan(selectView, selectRequest) {
+function toFrontendPlan(selectView, selectRequest, folders = targetFolders) {
   const lineageTrees = (selectView.copyModuleLineageTrees || []).map((node, index) => toFrontendLineageTree(node, `N_${index}`))
   const dependencyActionCounts = countLineageActions(lineageTrees)
   const copyableItems = selectView.copyableItems || []
@@ -571,7 +587,7 @@ function toFrontendPlan(selectView, selectRequest) {
       availableResolutions: item.itemNewCode ? ['RENAME'] : ['SKIP_AFFECTED_COPY'],
     })),
     lineageTrees,
-    targetFolders,
+    targetFolders: folders.length ? folders : targetFolders,
   }
 }
 
@@ -625,79 +641,178 @@ function toBackendSaveView(saveRequest) {
   }
 }
 
+function normalizeProjectList(list = [], pageNo = 1, pageSize = 20) {
+  const items = list.map((item) => {
+    const projectId = item.id || item.projectId || item.name || item.projectName
+    const projectName = item.name || item.projectName || item.id || item.projectId
+    projectNameById.set(projectId, projectName)
+    return { projectId, projectName }
+  })
+  return { items, pageNo, pageSize, total: items.length }
+}
+
+function normalizeFlowList(list = [], projectId, pageNo = 1, pageSize = 20) {
+  const items = list.map((item) => {
+    const flowId = item.processKey || item.flowId || item.flowCode
+    const flowCode = item.processKey || item.flowCode || flowId
+    const flowName = item.processName || item.flowName || flowCode
+    flowNameByKey.set(flowId, flowName)
+    return { flowId, projectId, flowCode, flowName }
+  })
+  return { items, pageNo, pageSize, total: items.length }
+}
+
+function normalizeVersionList(list = [], flowId) {
+  return {
+    items: list.map((item) => {
+      const versionId = item.processVersion || item.versionId || item.versionNo
+      const processKey = item.processKey || flowId
+      versionProcessKeyByVersion.set(versionId, processKey)
+      return {
+        versionId,
+        flowId: processKey,
+        versionNo: item.processVersion || item.versionNo || item.versionId,
+        versionStatus: item.processStatus || item.versionStatus || '',
+        versionStatusName: item.processStatus || item.versionStatusName || item.versionStatus || '',
+        processName: item.processName,
+        processKey,
+      }
+    }),
+  }
+}
+
+function normalizeSourceResources(list = [], sourceProcessVersion) {
+  return {
+    sourceVersionId: sourceProcessVersion,
+    groups: list.map((group) => ({
+      groupType: 'RULE_PACKAGE',
+      groupId: group.pkgId || group.groupId || group.pkgName,
+      groupName: group.pkgName || group.groupName || group.pkgId,
+      items: (group.resourceDetails || group.items || []).map((item) => ({
+        resourceId: item.id || item.resourceId || item.code,
+        resourceType: item.module ? toFrontendResourceType(item.module) : 'RULE',
+        resourceCode: item.code || item.resourceCode || item.id,
+        resourceName: item.name || item.resourceName || item.code,
+        refCount: item.refCount || 0,
+        selectable: item.selectable !== false,
+      })),
+    })).filter((group) => group.items.length),
+  }
+}
+
+function normalizePkgList(list = []) {
+  return list.map((item) => ({
+    folderId: item.pkgId || item.folderId || item.pkgName,
+    folderName: item.pkgName || item.folderName || item.pkgId,
+    processKey: item.processKey,
+    processVersion: item.processVersion,
+    referenced: item.referenced,
+  }))
+}
+
 async function mockRequest(path, { method = 'GET', query = {}, body } = {}) {
   await sleep(method === 'GET' ? 120 : 260)
 
   if (method === 'GET' && path === '/api/decision-copy/context') return targetContext
 
-  if (method === 'GET' && path === '/api/projects') {
-    const pageNo = Number(query.pageNo || 1)
-    const pageSize = Number(query.pageSize || 20)
-    const filtered = projects.filter((item) => includesKeyword(item.projectName, query.keyword))
-    return { items: filtered.slice((pageNo - 1) * pageSize, pageNo * pageSize), pageNo, pageSize, total: filtered.length }
+  const projectMatch = path.match(/^\/copy\/projects\/(.*)$/)
+  if (method === 'GET' && projectMatch) {
+    const keyword = decodeURIComponent(projectMatch[1] || '')
+    return projects
+      .filter((item) => includesKeyword(item.projectName, keyword))
+      .map((item) => ({ id: item.projectId, name: item.projectName }))
   }
 
-  const flowMatch = path.match(/^\/api\/projects\/([^/]+)\/decision-flows$/)
+  const flowMatch = path.match(/^\/copy\/process\/([^/]+)\/(.*)$/)
   if (method === 'GET' && flowMatch) {
-    const pageNo = Number(query.pageNo || 1)
-    const pageSize = Number(query.pageSize || 20)
-    const projectId = flowMatch[1]
-    const filtered = flows.filter((item) => item.projectId === projectId && (includesKeyword(item.flowName, query.keyword) || includesKeyword(item.flowCode, query.keyword)))
-    return { items: filtered.slice((pageNo - 1) * pageSize, pageNo * pageSize), pageNo, pageSize, total: filtered.length }
+    const projectName = decodeURIComponent(flowMatch[1])
+    const keyword = decodeURIComponent(flowMatch[2] || '')
+    const project = projects.find((item) => item.projectId === projectName || item.projectName === projectName)
+    return flows
+      .filter((item) => (!project || item.projectId === project.projectId) && (includesKeyword(item.flowName, keyword) || includesKeyword(item.flowCode, keyword)))
+      .map((item) => ({ processKey: item.flowCode, processName: item.flowName }))
   }
 
-  const versionMatch = path.match(/^\/api\/decision-flows\/([^/]+)\/versions$/)
+  const versionMatch = path.match(/^\/copy\/version\/([^/]+)$/)
   if (method === 'GET' && versionMatch) {
-    return { items: versions.filter((item) => item.flowId === versionMatch[1]) }
+    const processKey = decodeURIComponent(versionMatch[1])
+    const flow = flows.find((item) => item.flowCode === processKey || item.flowId === processKey)
+    return versions.filter((item) => item.flowId === flow?.flowId).map((item) => ({
+      processKey,
+      processName: flow?.flowName || processKey,
+      processStatus: item.versionStatusName,
+      processVersion: item.versionNo,
+    }))
   }
 
-  if (method === 'GET' && path === '/api/decision-copy/source-resources') {
-    const version = versions.find((item) => item.versionId === query.sourceVersionId)
+  const pkgMatch = path.match(/^\/copy\/pkg\/([^/]+)\/([^/]+)$/)
+  if (method === 'GET' && pkgMatch) {
+    const processKey = decodeURIComponent(pkgMatch[1])
+    const processVersion = decodeURIComponent(pkgMatch[2])
+    return targetFolders.map((folder) => ({
+      pkgId: folder.folderId,
+      pkgName: folder.folderName,
+      processKey,
+      processVersion,
+      referenced: false,
+    }))
+  }
+
+  if (method === 'POST' && path === '/copy/resources') {
+    const version = versions.find((item) => item.versionNo === body?.sourceProcessVersion || item.versionId === body?.sourceProcessVersion)
     const preset = presetMap[version?.resourcePreset] || presetMap.empty
-    const match = (item) => includesKeyword(item.resourceName, query.keyword) || includesKeyword(item.resourceCode, query.keyword)
-    const ruleGroups = packages
+    const match = (item) => includesKeyword(item.resourceName, body?.name) || includesKeyword(item.resourceCode, body?.name)
+    return packages
       .filter((item) => preset.packages.includes(item.groupId))
       .map((pkg) => ({
-        groupType: 'RULE_PACKAGE',
-        groupId: pkg.groupId,
-        groupName: pkg.groupName,
-        items: pkg.rules.map((id) => resources[id]).filter(Boolean).filter(match).map(toSelectableResource),
+        pkgId: pkg.groupId,
+        pkgName: pkg.groupName,
+        resourceDetails: pkg.rules.map((id) => resources[id]).filter(Boolean).filter(match).map((item) => ({
+          id: item.resourceId,
+          code: item.resourceCode,
+          name: item.resourceName,
+        })),
       }))
-      .filter((group) => group.items.length)
-    const componentItems = preset.components.map((id) => resources[id]).filter(Boolean).filter(match).map(toSelectableResource)
-    return {
-      sourceVersionId: query.sourceVersionId,
-      groups: [
-        ...ruleGroups,
-        ...(componentItems.length ? [{ groupType: 'COMPONENT_TYPE', groupId: 'COMPONENT', groupName: '计算组件', items: componentItems }] : []),
-      ],
-    }
+      .filter((group) => group.resourceDetails.length)
   }
 
-  if (method === 'POST' && path === '/ruleInfo/resourceCopySelect') return toBackendSelectView(body || {})
-  if (method === 'POST' && path === '/ruleInfo/resourceCopySave') return toBackendSaveView(body || {})
+  if (method === 'POST' && path === '/copy/copyValidated') return toBackendSelectView(body || {})
+  if (method === 'POST' && path === '/copy/copySave') return toBackendSaveView(body || {})
 
-  throw new Error(`Mock 接口未定义：${method} ${path}`)
+  throw new Error(`Mock ??????${method} ${path}`)
 }
 
 export async function getCopyContext() {
-  return request('/api/decision-copy/context')
+  return getLocalCopyContext()
 }
 
 export async function listProjects({ keyword = '', pageNo = 1, pageSize = 20 } = {}) {
-  return request('/api/projects', { query: { keyword, pageNo, pageSize } })
+  const list = await request(`/copy/projects/${encodeURIComponent(keyword || '')}`)
+  return normalizeProjectList(list, pageNo, pageSize)
 }
 
 export async function listDecisionFlows(projectId, { keyword = '', pageNo = 1, pageSize = 20 } = {}) {
-  return request(`/api/projects/${projectId}/decision-flows`, { query: { keyword, pageNo, pageSize } })
+  const projectName = projectNameById.get(projectId) || projectId || ''
+  const list = await request(`/copy/process/${encodeURIComponent(projectName)}/${encodeURIComponent(keyword || '')}`)
+  return normalizeFlowList(list, projectId, pageNo, pageSize)
 }
 
 export async function listFlowVersions(flowId) {
-  return request(`/api/decision-flows/${flowId}/versions`)
+  const list = await request(`/copy/version/${encodeURIComponent(flowId)}`)
+  return normalizeVersionList(list, flowId)
 }
 
-export async function getSourceResources({ sourceVersionId, keyword = '' }) {
-  return request('/api/decision-copy/source-resources', { query: { sourceVersionId, keyword } })
+export async function getSourceResources({ sourceVersionId, sourceProcessKey, keyword = '' }) {
+  const processKey = sourceProcessKey || versionProcessKeyByVersion.get(sourceVersionId) || ''
+  const list = await request('/copy/resources', {
+    method: 'POST',
+    body: {
+      name: keyword,
+      sourceProcessKey: processKey,
+      sourceProcessVersion: sourceVersionId,
+    },
+  })
+  return normalizeSourceResources(list, sourceVersionId)
 }
 
 function toSelectableResource(item) {
@@ -714,13 +829,20 @@ function toSelectableResource(item) {
 
 export async function createCopyPlan(payload) {
   const selectRequest = toResourceCopySelectRequest(payload)
-  const selectView = await request('/ruleInfo/resourceCopySelect', { method: 'POST', body: selectRequest })
-  return toFrontendPlan(selectView, selectRequest)
+  const selectView = await request('/copy/copyValidated', { method: 'POST', body: selectRequest })
+  const folders = await listTargetPackages(selectRequest.targetProcessKey, selectRequest.targetProcessVersion)
+  return toFrontendPlan(selectView, selectRequest, folders)
+}
+
+async function listTargetPackages(processKey, processVersion) {
+  if (!processKey || !processVersion) return targetFolders
+  const list = await request(`/copy/pkg/${encodeURIComponent(processKey)}/${encodeURIComponent(processVersion)}`)
+  return normalizePkgList(list)
 }
 
 export async function saveCopyResources(plan, resolution) {
   const saveRequest = toResourceCopySaveRequest(plan, resolution)
-  const result = await request('/ruleInfo/resourceCopySave', { method: 'POST', body: saveRequest })
+  const result = await request('/copy/copySave', { method: 'POST', body: saveRequest })
   const saveId = `SAVE_${Date.now()}`
   saveResults.set(saveId, { saveRequest, result })
   return {
