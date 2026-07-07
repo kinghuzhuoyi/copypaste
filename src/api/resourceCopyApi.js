@@ -7,14 +7,14 @@ const projectNameById = new Map()
 const flowNameByKey = new Map()
 const versionProcessKeyByVersion = new Map()
 
-async function request(path, { method = 'GET', query, body } = {}) {
-  if (USE_MOCK_API) return mockRequest(path, { method, query, body })
+async function request(path, { method = 'GET', query, body, mockBody } = {}) {
+  if (USE_MOCK_API) return mockRequest(path, { method, query, body: mockBody || body })
 
   const url = new URL(`${API_BASE_URL}${path}`, window.location.origin)
   Object.entries(query || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value)
   })
-const response = await fetch(url.toString(), {
+  const response = await fetch(url.toString(), {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
@@ -78,10 +78,11 @@ const resources = {
   R004: { resourceId: 'R004', resourceCode: 'R004', resourceName: '设备指纹规则', resourceType: 'RULE', refs: ['IP07', 'TG03', 'C005'] },
   R005: { resourceId: 'R005', resourceCode: 'R005', resourceName: '黑名单规则', resourceType: 'RULE', refs: ['IP08', 'TG01'] },
   C001: { resourceId: 'C001', resourceCode: 'C001', resourceName: '评分卡组件', resourceType: 'COMPONENT', componentType: 'CODE_COMPONENT', refs: ['IP03', 'TG02', 'FC01', 'C003'] },
-  C002: { resourceId: 'C002', resourceCode: 'C002', resourceName: '决策树组件', resourceType: 'COMPONENT', componentType: 'DECISION_TABLE', refs: ['IP04', 'FC02'] },
+  C002: { resourceId: 'C002', resourceCode: 'C002', resourceName: '客户分层决策表', resourceType: 'COMPONENT', componentType: 'DECISION_TABLE', refs: ['IP04', 'FC02'] },
   C003: { resourceId: 'C003', resourceCode: 'C003', resourceName: '子模型组件', resourceType: 'COMPONENT', componentType: 'CODE_COMPONENT', refs: ['IP05', 'C004', 'FC01'] },
   C004: { resourceId: 'C004', resourceCode: 'C004', resourceName: '底层算子组件', resourceType: 'COMPONENT', componentType: 'CODE_COMPONENT', refs: [] },
   C005: { resourceId: 'C005', resourceCode: 'C005', resourceName: '特征工程组件', resourceType: 'COMPONENT', componentType: 'CODE_COMPONENT', refs: ['IP09', 'FC03'] },
+  C006: { resourceId: 'C006', resourceCode: 'C006', resourceName: '额度矩阵交叉表', resourceType: 'COMPONENT', componentType: 'CROSS_DECISION_TABLE', refs: ['IP01', 'IP02'] },
   IP01: { resourceId: 'IP01', resourceCode: 'IP01', resourceName: '申请金额', resourceType: 'INPUT_PARAM', paramType: 'number' },
   IP02: { resourceId: 'IP02', resourceCode: 'IP02', resourceName: '客户等级', resourceType: 'INPUT_PARAM', paramType: 'string' },
   IP03: { resourceId: 'IP03', resourceCode: 'IP03', resourceName: '评分输入', resourceType: 'INPUT_PARAM', paramType: 'number' },
@@ -106,7 +107,7 @@ const packages = [
 ]
 
 const presetMap = {
-  full: { packages: ['PKG1', 'PKG2'], components: ['C001', 'C002', 'C003', 'C004', 'C005'] },
+  full: { packages: ['PKG1', 'PKG2'], components: ['C001', 'C002', 'C003', 'C004', 'C005', 'C006'] },
   fraud: { packages: ['PKG2'], components: ['C005'] },
   empty: { packages: [], components: [] },
   stress: { packages: ['PKG_STRESS'], components: [] },
@@ -120,6 +121,7 @@ const targetExisting = {
   TG01: { resourceCode: 'TG01', resourceName: '标签-是否逾期', resourceType: 'RULE_TAG', paramType: 'bool', desc: '是否逾期', defaultValue: 'false' },
   FC01: { resourceCode: 'FC01', resourceName: '缓存-评分中间值', resourceType: 'FLOW_CACHE', paramType: 'number', defaultValue: '100' },
   C001: { resourceCode: 'C001', resourceName: '评分卡组件-旧', resourceType: 'COMPONENT' },
+  C002: { resourceCode: 'C002', resourceName: '客户分层决策表-旧', resourceType: 'COMPONENT' },
 }
 
 const targetFolders = [
@@ -288,9 +290,11 @@ function judge(source) {
 
   if (source.resourceType === 'COMPONENT') {
     const diffs = contentDiffs(source, target)
-    return diffs.length
-      ? { action: 'TERMINATE', reason: '组件编码冲突且不支持重命名，终止引用它的拷贝', diffs }
-      : { action: 'REUSE', reason: '目标已有同编码且内容一致的组件，复用', diffs: [] }
+    if (!diffs.length) return { action: 'REUSE', reason: '目标已有同编码且内容一致的组件，复用', diffs: [] }
+    if (source.componentType === 'DECISION_TABLE') {
+      return { action: 'RENAME', reason: '决策表编码冲突，允许重命名后复制', diffs, suggestedCode: `${source.resourceCode}_COPY` }
+    }
+    return { action: 'TERMINATE', reason: '组件编码冲突且不支持重命名，终止引用它的拷贝', diffs }
   }
 
   if (source.resourceType === 'INPUT_PARAM') {
@@ -435,10 +439,12 @@ function toBackendLineageTree(node) {
     itemName: node.resourceName,
     modelList: [],
     module: toBackendModule(node.resourceType),
+    moduleDesc: node.resourceTypeDesc || '',
     moduleVarList: [],
     paramsList: [],
     pluginList: [],
     typeTag: toBackendTypeTag(node.action),
+    typeTagDesc: node.actionDesc || '',
     varList: [],
   }
 }
@@ -509,9 +515,11 @@ function toFrontendLineageTree(node, path = 'N') {
     resourceId: node.itemCode,
     resourceType,
     resourceCode: node.itemCode,
+    resourceTypeDesc: node.moduleDesc || '',
     resourceName: node.itemName,
     action,
-    reason: action === 'TERMINATE' ? '冲突终止' : action === 'DIRECT_REF' ? '公共资源直接调用' : '按后端预检方案处理',
+    actionDesc: node.typeTagDesc || '',
+    reason: node.typeTagDesc || (action === 'TERMINATE' ? '冲突终止' : action === 'DIRECT_REF' ? '公共资源直接调用' : '按后端预检方案处理'),
     children: [
       ...(node.children || []).map((child, index) => toFrontendLineageTree(child, `${nodeId}_${index}`)),
       ...listChildren,
@@ -558,6 +566,7 @@ function toFrontendPlan(selectView, selectRequest, folders = targetFolders) {
         resourceCode: item.itemCode,
         resourceName: item.itemName,
         resourceType: toFrontendResourceType(item.module),
+        resourceTypeDesc: item.moduleDesc || '',
         copyable: true,
         action: 'COPY',
         reason: '后端预检为可复制资源',
@@ -567,6 +576,7 @@ function toFrontendPlan(selectView, selectRequest, folders = targetFolders) {
         resourceCode: item.itemCode,
         resourceName: item.itemName,
         resourceType: toFrontendResourceType(item.module),
+        resourceTypeDesc: item.moduleDesc || '',
         copyable: false,
         action: item.itemNewCode ? 'RENAME' : 'TERMINATE',
         reason: item.conflictMsg,
@@ -576,6 +586,7 @@ function toFrontendPlan(selectView, selectRequest, folders = targetFolders) {
       conflictId: `CF_${String(index + 1).padStart(3, '0')}`,
       resourceId: item.itemCode,
       resourceType: toFrontendResourceType(item.module),
+      resourceTypeDesc: item.moduleDesc || '',
       resourceCode: item.itemCode,
       resourceName: item.itemName,
       action: item.itemNewCode ? 'RENAME' : 'TERMINATE',
@@ -599,15 +610,17 @@ function resolveFolder(folderValue) {
 function toResourceCopySaveRequest(plan, resolution = {}) {
   const renameMap = resolution.renameMap || {}
   const folderMap = resolution.folderMap || {}
+  const abandonMap = resolution.abandonMap || {}
   const raw = plan.rawSelectView || {}
   return {
     conflictItems: (raw.conflictItems || []).map((item) => ({
       ...item,
-      itemNewCode: renameMap[item.itemCode] ?? item.itemNewCode ?? '',
+      itemNewCode: abandonMap[item.itemCode] ? '' : (renameMap[item.itemCode] ?? item.itemNewCode ?? ''),
     })),
     copyModuleLineageTrees: raw.copyModuleLineageTrees || [],
-    copyableItems: (raw.copyableItems || []).map((item) => {
-      const folder = resolveFolder(folderMap[item.itemCode] || item.pkgId || item.pkgName)
+    copyableItems: (raw.copyableItems || []).filter((item) => !abandonMap[item.itemCode]).map((item) => {
+      const isRule = item.module === 'RULE'
+      const folder = isRule ? resolveFolder(folderMap[item.itemCode] || item.pkgId || item.pkgName) : { folderId: item.pkgId || '', folderName: item.pkgName || '' }
       return {
         ...item,
         pkgId: folder.folderId,
@@ -681,16 +694,16 @@ function normalizeVersionList(list = [], flowId) {
   }
 }
 
-function normalizeSourceResources(list = [], sourceProcessVersion) {
+function normalizeSourceResources(list = [], sourceProcessVersion, fallbackResourceType = 'RULE') {
   return {
     sourceVersionId: sourceProcessVersion,
     groups: list.map((group) => ({
-      groupType: 'RULE_PACKAGE',
+      groupType: group.groupType || (fallbackResourceType === 'COMPONENT' ? 'COMPONENT_TYPE' : 'RULE_PACKAGE'),
       groupId: group.pkgId || group.groupId || group.pkgName,
       groupName: group.pkgName || group.groupName || group.pkgId,
       items: (group.resourceDetails || group.items || []).map((item) => ({
         resourceId: item.id || item.resourceId || item.code,
-        resourceType: item.module ? toFrontendResourceType(item.module) : 'RULE',
+        resourceType: item.module ? toFrontendResourceType(item.module) : (item.resourceType || fallbackResourceType),
         resourceCode: item.code || item.resourceCode || item.id,
         resourceName: item.name || item.resourceName || item.code,
         refCount: item.refCount || 0,
@@ -713,7 +726,6 @@ function normalizePkgList(list = []) {
 async function mockRequest(path, { method = 'GET', query = {}, body } = {}) {
   await sleep(method === 'GET' ? 120 : 260)
 
-  if (method === 'GET' && path === '/api/decision-copy/context') return targetContext
 
   const projectMatch = path.match(/^\/copy\/projects\/(.*)$/)
   if (method === 'GET' && projectMatch) {
@@ -762,15 +774,42 @@ async function mockRequest(path, { method = 'GET', query = {}, body } = {}) {
     const version = versions.find((item) => item.versionNo === body?.sourceProcessVersion || item.versionId === body?.sourceProcessVersion)
     const preset = presetMap[version?.resourcePreset] || presetMap.empty
     const match = (item) => includesKeyword(item.resourceName, body?.name) || includesKeyword(item.resourceCode, body?.name)
+    if (body?.resourceType === 'COMPONENT') {
+      const componentItems = Object.values(resources).filter((item) => item.resourceType === 'COMPONENT' && preset.components.includes(item.resourceId)).filter(match)
+      const componentTypeNames = {
+        CODE_COMPONENT: '代码组件',
+        DECISION_TABLE: '决策表',
+        CROSS_DECISION_TABLE: '交叉决策表',
+      }
+      const groupedComponents = componentItems.reduce((acc, item) => {
+        const type = item.componentType || 'CODE_COMPONENT'
+        if (!acc[type]) acc[type] = []
+        acc[type].push(item)
+        return acc
+      }, {})
+      return Object.entries(groupedComponents).map(([type, items]) => ({
+        groupType: 'COMPONENT_TYPE',
+        groupId: type,
+        groupName: componentTypeNames[type] || type,
+        resourceDetails: items.map((item) => ({
+          id: item.resourceId,
+          code: item.resourceCode,
+          name: item.resourceName,
+          module: 'CODE',
+        })),
+      })).filter((group) => group.resourceDetails.length)
+    }
     return packages
       .filter((item) => preset.packages.includes(item.groupId))
       .map((pkg) => ({
+        groupType: 'RULE_PACKAGE',
         pkgId: pkg.groupId,
         pkgName: pkg.groupName,
         resourceDetails: pkg.rules.map((id) => resources[id]).filter(Boolean).filter(match).map((item) => ({
           id: item.resourceId,
           code: item.resourceCode,
           name: item.resourceName,
+          module: 'RULE',
         })),
       }))
       .filter((group) => group.resourceDetails.length)
@@ -802,7 +841,7 @@ export async function listFlowVersions(flowId) {
   return normalizeVersionList(list, flowId)
 }
 
-export async function getSourceResources({ sourceVersionId, sourceProcessKey, keyword = '' }) {
+export async function getSourceResources({ sourceVersionId, sourceProcessKey, keyword = '', resourceType = 'RULE' }) {
   const processKey = sourceProcessKey || versionProcessKeyByVersion.get(sourceVersionId) || ''
   const list = await request('/copy/resources', {
     method: 'POST',
@@ -811,8 +850,14 @@ export async function getSourceResources({ sourceVersionId, sourceProcessKey, ke
       sourceProcessKey: processKey,
       sourceProcessVersion: sourceVersionId,
     },
+    mockBody: {
+      name: keyword,
+      sourceProcessKey: processKey,
+      sourceProcessVersion: sourceVersionId,
+      resourceType,
+    },
   })
-  return normalizeSourceResources(list, sourceVersionId)
+  return normalizeSourceResources(list, sourceVersionId, resourceType)
 }
 
 function toSelectableResource(item) {

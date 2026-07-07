@@ -1,21 +1,55 @@
-<script setup>
+﻿<script setup>
 import { computed, ref, watch } from 'vue'
 import ResolutionTag from './ResolutionTag.vue'
 
-const props = defineProps({ plan: { type: Object, required: true } })
+const props = defineProps({
+  plan: { type: Object, required: true },
+  entryType: { type: String, default: 'RULE' },
+})
 const folderMap = defineModel('folders', { type: Object, required: true })
 const renameMap = defineModel('renames', { type: Object, required: true })
+const abandonMap = defineModel('abandons', { type: Object, required: true })
 
 const activeSections = ref(['lineage'])
+const activeSummaryTab = ref('TERMINATE')
 const lineageKeyword = ref('')
 const lineageAction = ref('')
+const confirmChoice = ref({})
 
-const actionCounts = computed(() => props.plan.summary?.dependencyActionCounts || {})
-const rootResults = computed(() => props.plan.rootResults || [])
-const copyableRoots = computed(() => rootResults.value.filter((item) => item.copyable))
-const terminateConflicts = computed(() => (props.plan.conflicts || []).filter((item) => item.action === 'TERMINATE'))
-const renameConflicts = computed(() => (props.plan.conflicts || []).filter((item) => item.action === 'RENAME'))
-const conflictCount = computed(() => terminateConflicts.value.length + renameConflicts.value.length)
+const showRuleFolders = computed(() => props.entryType === 'RULE')
+const conflictsByCode = computed(() => new Map((props.plan.conflicts || []).map((item) => [item.resourceCode, item])))
+const summaryRows = computed(() => (props.plan.lineageTrees || []).map((root) => {
+  const directConflict = conflictsByCode.value.get(root.resourceCode)
+  const dependencyConflicts = collectDependencyConflicts(root)
+  const status = root.action === 'TERMINATE' ? 'TERMINATE' : root.action === 'RENAME' ? 'CONFIRM' : 'SUCCESS'
+  const conflictMessages = []
+
+  if (directConflict) conflictMessages.push(formatConflict(directConflict))
+  dependencyConflicts.forEach((item) => conflictMessages.push(formatConflict(item)))
+  if (!conflictMessages.length && root.action === 'TERMINATE') conflictMessages.push(root.reason || '后端判定该目标无法继续拷贝')
+  if (!conflictMessages.length && root.action === 'RENAME') conflictMessages.push(directConflict?.reason || '目标侧存在同编码资源，需要确认重命名或放弃拷贝')
+
+  return {
+    resourceId: root.resourceId,
+    resourceCode: root.resourceCode,
+    resourceName: root.resourceName,
+    resourceType: root.resourceType,
+    action: root.action || 'COPY',
+    status,
+    reason: root.reason,
+    suggestedCode: directConflict?.suggestedCode || `${root.resourceCode}_COPY`,
+    conflictMessages,
+  }
+}))
+const terminateRows = computed(() => summaryRows.value.filter((row) => row.status === 'TERMINATE'))
+const confirmRows = computed(() => summaryRows.value.filter((row) => row.status === 'CONFIRM'))
+const successRows = computed(() => summaryRows.value.filter((row) => row.status === 'SUCCESS'))
+const summaryGroups = computed(() => [
+  { name: 'TERMINATE', label: '冲突', count: terminateRows.value.length, rows: terminateRows.value, empty: '暂无冲突资源' },
+  { name: 'CONFIRM', label: '待确认', count: confirmRows.value.length, rows: confirmRows.value, empty: '暂无待确认资源' },
+  { name: 'SUCCESS', label: '顺利', count: successRows.value.length, rows: successRows.value, empty: '暂无顺利拷贝资源' },
+])
+const folderRows = computed(() => summaryRows.value.filter((row) => showRuleFolders.value && row.resourceType === 'RULE' && row.status !== 'TERMINATE' && confirmChoice.value[row.resourceId] !== 'ABANDON'))
 const totalLineageNodeCount = computed(() => countNodes(props.plan.lineageTrees || []))
 const filteredLineageTrees = computed(() => {
   const keyword = lineageKeyword.value.trim().toLowerCase()
@@ -30,13 +64,6 @@ const lineageVisibleText = computed(() => {
   const current = filteredLineageNodeCount.value
   return current === total ? `共 ${total} 个节点` : `已筛选 ${current} / ${total} 个节点`
 })
-const lineageStats = computed(() => [
-  { label: '复制', value: actionCounts.value.COPY || 0, tone: 'copy' },
-  { label: '复用', value: actionCounts.value.REUSE || 0, tone: 'reuse' },
-  { label: '重命名', value: actionCounts.value.RENAME || 0, tone: 'rename' },
-  { label: '直接调用', value: actionCounts.value.DIRECT_REF || 0, tone: 'direct' },
-  { label: '冲突终止', value: actionCounts.value.TERMINATE || 0, tone: 'terminate' },
-])
 
 const typeNames = {
   RULE: '规则',
@@ -49,17 +76,50 @@ const typeNames = {
   CYCLE: '循环引用',
 }
 
-watch(copyableRoots, (roots) => {
-  roots.forEach((root) => {
-    if (!folderMap.value[root.resourceId]) folderMap.value[root.resourceId] = props.plan.targetFolders?.[0]?.folderId || ''
+watch(confirmRows, (rows) => {
+  rows.forEach((row) => {
+    if (!confirmChoice.value[row.resourceId]) confirmChoice.value[row.resourceId] = 'RENAME'
+    if (!renameMap.value[row.resourceId]) renameMap.value[row.resourceId] = row.suggestedCode
   })
 }, { immediate: true })
 
-watch(renameConflicts, (items) => {
-  items.forEach((item) => {
-    if (!renameMap.value[item.resourceId]) renameMap.value[item.resourceId] = item.suggestedCode || `${item.resourceCode}_COPY`
+watch(folderRows, (rows) => {
+  rows.forEach((row) => {
+    if (!folderMap.value[row.resourceId]) folderMap.value[row.resourceId] = props.plan.targetFolders?.[0]?.folderId || ''
   })
 }, { immediate: true })
+
+function collectDependencyConflicts(root) {
+  const result = []
+  const visit = (nodes = []) => {
+    nodes.forEach((node) => {
+      const conflict = conflictsByCode.value.get(node.resourceCode)
+      if (conflict && node.resourceCode !== root.resourceCode) result.push(conflict)
+      visit(node.children || [])
+    })
+  }
+  visit(root.children || [])
+  return Array.from(new Map(result.map((item) => [item.resourceCode, item])).values())
+}
+
+function formatConflict(item) {
+  const type = item.resourceTypeDesc || typeLabel(item.resourceType)
+  return `${type} ${item.resourceName}（${item.resourceCode}）：${item.reason}`
+}
+
+function rowConflictText(row) {
+  return row.conflictMessages.length ? row.conflictMessages.join('；') : '无冲突'
+}
+
+function onChoiceChange(row) {
+  if (confirmChoice.value[row.resourceId] === 'ABANDON') {
+    abandonMap.value[row.resourceId] = true
+    renameMap.value[row.resourceId] = ''
+    return
+  }
+  delete abandonMap.value[row.resourceId]
+  if (!renameMap.value[row.resourceId]) renameMap.value[row.resourceId] = row.suggestedCode
+}
 
 function countNodes(nodes = []) {
   return nodes.reduce((sum, node) => sum + 1 + countNodes(node.children || []), 0)
@@ -99,64 +159,81 @@ function nodeClass(data) {
 
 <template>
   <section class="review">
-    <div class="rate-card">
-      <el-progress type="dashboard" :percentage="plan.summary.achievementRate" :stroke-width="10" />
-      <div class="rate-detail">
-        <div class="rate-title">计划拷贝目标达成率</div>
-        <div class="rate-line"><b>{{ plan.summary.copyableRootCount }}/{{ plan.summary.selectedRootCount }}</b> 个第一步选择资源可继续拷贝</div>
-        <div class="top-list">
-          <span v-for="root in rootResults" :key="root.resourceId" class="top-chip" :class="root.copyable ? 'ok' : 'bad'">
-            {{ root.resourceName }} · {{ root.copyable ? '可拷贝' : '无法拷贝' }}
-          </span>
+    <section class="copy-summary">
+      <div class="summary-head">
+        <div>
+          <b>拷贝摘要</b>
+        </div>
+        <div class="summary-counts">
+          <span>冲突 {{ terminateRows.length }}</span>
+          <span>待确认 {{ confirmRows.length }}</span>
+          <span>顺利 {{ successRows.length }}</span>
         </div>
       </div>
-    </div>
 
-    <div class="distribution"><b>依赖资源判定分布（含不可执行分支）</b>
-      <span><i class="copy"></i>复制 {{ actionCounts.COPY || 0 }}</span>
-      <span><i class="rename"></i>重命名 {{ actionCounts.RENAME || 0 }}</span>
-      <span><i class="skip"></i>复用 {{ actionCounts.REUSE || 0 }}</span>
-      <span><i class="direct"></i>直接调用 {{ actionCounts.DIRECT_REF || 0 }}</span>
-      <span><i class="terminate"></i>冲突终止 {{ actionCounts.TERMINATE || 0 }}</span>
-    </div>
+      <el-tabs v-model="activeSummaryTab" class="summary-tabs">
+        <el-tab-pane v-for="group in summaryGroups" :key="group.name" :name="group.name">
+          <template #label>
+            <span class="summary-tab-label">{{ group.label }}<b>{{ group.count }}</b></span>
+          </template>
 
-    <div class="section-title">冲突信息 <span>{{ conflictCount }} 项</span></div>
-    <el-empty v-if="!conflictCount" description="未发现冲突，所有资源均可按计划处理" :image-size="70" />
+          <div class="summary-table">
+            <div class="summary-table-head" :class="`is-${group.name.toLowerCase()}`">
+              <span>拷贝目标</span>
+              <span>编码</span>
+              <span v-if="group.name !== 'SUCCESS'">冲突信息</span>
+              <span v-if="group.name !== 'TERMINATE'">操作 / 目标文件夹</span>
+            </div>
 
-    <article v-for="item in terminateConflicts" :key="item.conflictId" class="conflict-card danger">
-      <div class="conflict-head">
-        <ResolutionTag cat="TERMINATE" />
-        <b>{{ item.resourceName }}</b>
-        <code>{{ item.resourceCode }}</code>
-      </div>
-      <p>{{ item.reason }}</p>
-      <div v-if="item.diffs?.length" class="diff-list">
-        <div class="diff-head"><span>字段</span><em>本次拷贝</em><strong>目标已存在</strong></div>
-        <div v-for="diff in item.diffs" :key="diff.field" class="diff-row">
-          <span>{{ diff.fieldName }}</span><em>{{ diff.sourceValue }}</em><strong>{{ diff.targetValue }}</strong>
-        </div>
-      </div>
-      <div class="impact">影响拷贝目标：{{ item.affectedRootNames?.join('、') || '无' }}</div>
-    </article>
-
-    <article v-for="item in renameConflicts" :key="item.conflictId" class="conflict-card warning">
-      <div class="conflict-head">
-        <ResolutionTag cat="RENAME" />
-        <b>{{ item.resourceName }}</b>
-        <code>{{ item.resourceCode }}</code>
-      </div>
-      <p>{{ item.reason }}</p>
-      <div v-if="item.diffs?.length" class="diff-list">
-        <div class="diff-head"><span>字段</span><em>本次拷贝</em><strong>目标已存在</strong></div>
-        <div v-for="diff in item.diffs" :key="diff.field" class="diff-row">
-          <span>{{ diff.fieldName }}</span><em>{{ diff.sourceValue }}</em><strong>{{ diff.targetValue }}</strong>
-        </div>
-      </div>
-      <div class="rename-line">
-        <span>新规则编码</span>
-        <el-input v-model="renameMap[item.resourceId]" class="rename-input" />
-      </div>
-    </article>
+            <el-empty v-if="!group.rows.length" :description="group.empty" :image-size="60" />
+            <div v-for="row in group.rows" :key="row.resourceId" class="summary-row" :class="`is-${row.status.toLowerCase()}`">
+              <div class="summary-target" :title="`${row.resourceName} / ${row.resourceTypeDesc || typeLabel(row.resourceType)}`">
+                <b>{{ row.resourceName }}</b>
+                <span>{{ row.resourceTypeDesc || typeLabel(row.resourceType) }}</span>
+              </div>
+              <code :title="row.resourceCode">{{ row.resourceCode }}</code>
+              <div v-if="row.status !== 'SUCCESS'" class="summary-conflict" :title="rowConflictText(row)">
+                {{ rowConflictText(row) }}
+              </div>
+              <div v-if="row.status !== 'TERMINATE'" class="summary-action">
+                <template v-if="row.status === 'CONFIRM'">
+                  <el-select v-model="confirmChoice[row.resourceId]" class="choice-select" placeholder="处理方式" @change="onChoiceChange(row)">
+                    <el-option label="重命名" value="RENAME" />
+                    <el-option label="放弃拷贝" value="ABANDON" />
+                  </el-select>
+                  <div v-if="confirmChoice[row.resourceId] === 'RENAME'" class="action-fields">
+                    <el-input v-model="renameMap[row.resourceId]" placeholder="新编码" />
+                    <el-select
+                      v-if="showRuleFolders && row.resourceType === 'RULE'"
+                      v-model="folderMap[row.resourceId]"
+                      filterable
+                      allow-create
+                      default-first-option
+                      placeholder="目标文件夹"
+                    >
+                      <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                    </el-select>
+                  </div>
+                </template>
+                <template v-else>
+                  <el-select
+                    v-if="showRuleFolders && row.resourceType === 'RULE'"
+                    v-model="folderMap[row.resourceId]"
+                    filterable
+                    allow-create
+                    default-first-option
+                    placeholder="目标文件夹"
+                  >
+                    <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                  </el-select>
+                  <span v-else class="action-muted">无需用户处理</span>
+                </template>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </section>
 
     <el-collapse v-model="activeSections" class="lineage-collapse lineage-panel">
       <el-collapse-item name="lineage">
@@ -164,26 +241,10 @@ function nodeClass(data) {
           <div class="lineage-title">
             <div>
               <b>拷贝血缘完整展示</b>
-              <span>后端预检返回的完整依赖树和处理方式</span>
             </div>
             <em>{{ plan.lineageTrees?.length || 0 }} 个根节点 · {{ totalLineageNodeCount }} 个依赖节点</em>
           </div>
         </template>
-        <div class="lineage-insight">
-          <div class="lineage-metric">
-            <span>根资源</span>
-            <b>{{ plan.lineageTrees?.length || 0 }}</b>
-          </div>
-          <div class="lineage-metric">
-            <span>依赖节点</span>
-            <b>{{ totalLineageNodeCount }}</b>
-          </div>
-          <div v-for="item in lineageStats" :key="item.label" class="lineage-action-metric" :class="`is-${item.tone}`">
-            <i></i>
-            <span>{{ item.label }}</span>
-            <b>{{ item.value }}</b>
-          </div>
-        </div>
         <div class="lineage-tools">
           <el-input v-model="lineageKeyword" clearable placeholder="按编码、名称或说明筛选血缘" />
           <el-select v-model="lineageAction" clearable placeholder="处理方式" style="width: 150px">
@@ -207,7 +268,7 @@ function nodeClass(data) {
             <template #default="{ data }">
               <div :class="nodeClass(data)">
                 <ResolutionTag :cat="data.action || 'COPY'" />
-                <span class="lineage-type">{{ typeLabel(data.resourceType) }}</span>
+                <span class="lineage-type">{{ data.resourceTypeDesc || typeLabel(data.resourceType) }}</span>
                 <code class="lineage-code" :title="data.resourceCode">{{ data.resourceCode }}</code>
                 <b class="lineage-name" :title="data.resourceName">{{ data.resourceName }}</b>
                 <em class="lineage-reason" :title="data.reason">{{ data.reason }}</em>
@@ -217,16 +278,5 @@ function nodeClass(data) {
         </div>
       </el-collapse-item>
     </el-collapse>
-
-    <div class="section-title">可拷贝规则归类</div>
-    <div class="folder-box">
-      <div v-for="root in copyableRoots" :key="root.resourceId" class="folder-row">
-        <span>{{ root.resourceName }}</span>
-        <code>{{ renameMap[root.resourceId] || root.resourceCode }}</code>
-        <el-select v-model="folderMap[root.resourceId]" filterable allow-create default-first-option placeholder="目标规则包文件夹">
-          <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
-        </el-select>
-      </div>
-    </div>
   </section>
 </template>

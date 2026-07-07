@@ -1,4 +1,4 @@
-<script setup>
+﻿<script setup>
 defineProps({ task: { type: Object, required: true }, scene: { type: Object, required: true } })
 </script>
 
@@ -6,7 +6,7 @@ defineProps({ task: { type: Object, required: true }, scene: { type: Object, req
   <section class="done-panel">
     <div class="done-icon"><el-icon><CircleCheckFilled /></el-icon></div>
     <h2>{{ task.status === 'SUCCESS' ? '拷贝完成' : '正在拷贝' }}</h2>
-    <p>{{ task.status === 'SUCCESS' ? `已将可拷贝资源写入当前场景「${scene.sceneName}」` : (task.message || '正在提交拷贝任务') }}</p>
+    <p>{{ task.status === 'SUCCESS' ? `已完成资源拷贝，目标版本：${scene.flowCode || scene.flowName} · ${scene.versionNo}` : (task.message || '正在提交拷贝任务') }}</p>
     <el-progress v-if="task.status !== 'SUCCESS'" :percentage="task.progress || 0" :stroke-width="12" />
     <div class="done-stats">
       <div><b>{{ task.result?.copyCount || 0 }}</b><span>复制资源</span></div>

@@ -23,6 +23,8 @@ async function loadProjects() {
     projects.value = res.items
     if (!model.value.projectId && projects.value[0]) {
       model.value = { ...model.value, projectId: projects.value[0].projectId }
+    } else if (model.value.projectId) {
+      await loadFlows(model.value.projectId)
     }
   } finally {
     loading.value = false
