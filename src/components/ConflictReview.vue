@@ -269,6 +269,14 @@ function nodeClass(data) {
             <template #default="{ node, data }">
               <div :class="nodeClass(data)" :style="{ '--lineage-depth': `${node.level - 1}` }">
                 <div class="lineage-action-cell">
+                  <span
+                    v-if="data.children?.length"
+                    class="lineage-expand-toggle"
+                    :class="{ 'is-expanded': node.expanded }"
+                    aria-hidden="true"
+                    @click.stop="node.expanded = !node.expanded"
+                  ></span>
+                  <span v-else class="lineage-expand-placeholder" aria-hidden="true"></span>
                   <ResolutionTag :cat="data.action || 'COPY'" />
                 </div>
                 <span class="lineage-type">{{ data.resourceTypeDesc || typeLabel(data.resourceType) }}</span>
