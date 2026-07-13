@@ -612,15 +612,17 @@ function toFrontendPlan(selectView, selectRequest, folders = targetFolders) {
   }
 }
 
-function resolveFolder(folderValue) {
-  const matched = targetFolders.find((folder) => folder.folderId === folderValue || folder.folderName === folderValue)
-  return matched || { folderId: '', folderName: folderValue || '' }
+function resolveFolder(folderValue, folders = [], temporaryFolders = []) {
+  const matched = [...folders, ...temporaryFolders].find((folder) => folder.folderId === folderValue || folder.folderName === folderValue)
+  if (!matched) return { folderId: '', folderName: folderValue || '' }
+  return matched.temporary ? { folderId: '', folderName: matched.folderName } : matched
 }
 
 function toResourceCopySaveRequest(plan, resolution = {}) {
   const renameMap = resolution.renameMap || {}
   const folderMap = resolution.folderMap || {}
   const abandonMap = resolution.abandonMap || {}
+  const temporaryFolders = resolution.temporaryFolders || []
   const raw = plan.rawSelectView || {}
   return {
     conflictItems: (raw.conflictItems || []).map((item) => ({
@@ -630,7 +632,7 @@ function toResourceCopySaveRequest(plan, resolution = {}) {
     copyModuleLineageTrees: raw.copyModuleLineageTrees || [],
     copyableItems: (raw.copyableItems || []).filter((item) => !abandonMap[item.itemCode]).map((item) => {
       const isRule = item.module === 'RULE'
-      const folder = isRule ? resolveFolder(folderMap[item.itemCode] || item.pkgId || item.pkgName) : { folderId: item.pkgId || '', folderName: item.pkgName || '' }
+      const folder = isRule ? resolveFolder(folderMap[item.itemCode] || item.pkgId || item.pkgName, plan.targetFolders || [], temporaryFolders) : { folderId: item.pkgId || '', folderName: item.pkgName || '' }
       return {
         ...item,
         pkgId: folder.folderId,

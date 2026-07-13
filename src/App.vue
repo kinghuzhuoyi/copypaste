@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import SourceSelector from './components/SourceSelector.vue'
 import ResourcePicker from './components/ResourcePicker.vue'
@@ -15,10 +15,12 @@ const selected = ref([])
 const folderMap = ref({})
 const renameMap = ref({})
 const abandonMap = ref({})
+const temporaryFolders = ref([])
 const target = ref(null)
 const sourceMeta = reactive({ project: null, flow: null, version: null })
 const plan = ref(null)
 const task = ref({ status: 'PENDING', progress: 0, result: {} })
+const conflictReviewRef = ref(null)
 
 const canNext = computed(() => step.value === 0 ? selected.value.length > 0 && source.value.versionId : true)
 const copyButtonText = computed(() => plan.value?.summary?.blockedRootCount ? '继续拷贝其余项' : '开始拷贝')
@@ -66,6 +68,7 @@ function resetDialog() {
   folderMap.value = {}
   renameMap.value = {}
   abandonMap.value = {}
+  temporaryFolders.value = []
   plan.value = null
   task.value = { status: 'PENDING', progress: 0, result: {} }
 }
@@ -98,11 +101,13 @@ function collectUserResolution() {
     renameMap: renameMap.value,
     folderMap: folderMap.value,
     abandonMap: abandonMap.value,
+    temporaryFolders: temporaryFolders.value,
   }
 }
 
 async function finishCopy() {
   if (!plan.value) return
+  if (!conflictReviewRef.value?.validateFoldersBeforeSubmit?.()) return
   loading.value = true
   try {
     const resolution = collectUserResolution()
@@ -172,7 +177,7 @@ onMounted(async () => {
             <span>来源：{{ sourceMeta.project?.projectName }} / {{ sourceMeta.flow?.flowCode }} · {{ sourceMeta.flow?.flowName }} / {{ sourceMeta.version?.versionNo }}</span>
             <span>已选 {{ selected.length }} 个{{ entryConfig.noun }}</span>
           </div>
-          <ConflictReview v-if="plan" v-model:folders="folderMap" v-model:renames="renameMap" v-model:abandons="abandonMap" :plan="plan" :entry-type="entryType" />
+          <ConflictReview v-if="plan" ref="conflictReviewRef" v-model:folders="folderMap" v-model:renames="renameMap" v-model:abandons="abandonMap" v-model:temporary-folders="temporaryFolders" :plan="plan" :entry-type="entryType" />
         </div>
 
         <div v-show="step === 2" class="step-pane">

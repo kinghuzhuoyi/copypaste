@@ -9,12 +9,14 @@ const props = defineProps({
 const folderMap = defineModel('folders', { type: Object, required: true })
 const renameMap = defineModel('renames', { type: Object, required: true })
 const abandonMap = defineModel('abandons', { type: Object, required: true })
+const temporaryFolders = defineModel('temporaryFolders', { type: Array, required: true })
 
 const activeSections = ref(['lineage'])
 const activeSummaryTab = ref('TERMINATE')
 const lineageKeyword = ref('')
 const lineageAction = ref('')
 const confirmChoice = ref({})
+const folderErrors = ref({})
 
 const showRuleFolders = computed(() => props.entryType === 'RULE')
 const conflictsByCode = computed(() => new Map((props.plan.conflicts || []).map((item) => [item.resourceCode, item])))
@@ -50,6 +52,8 @@ const summaryGroups = computed(() => [
   { name: 'SUCCESS', label: '顺利', count: successRows.value.length, rows: successRows.value, empty: '暂无顺利拷贝资源' },
 ])
 const folderRows = computed(() => summaryRows.value.filter((row) => showRuleFolders.value && row.resourceType === 'RULE' && row.status !== 'TERMINATE' && confirmChoice.value[row.resourceId] !== 'ABANDON'))
+const allFolders = computed(() => [...(props.plan.targetFolders || []), ...(temporaryFolders.value || [])])
+const existingFolderNames = computed(() => new Set(allFolders.value.map((folder) => folder.folderName)))
 const totalLineageNodeCount = computed(() => countNodes(props.plan.lineageTrees || []))
 const filteredLineageTrees = computed(() => {
   const keyword = lineageKeyword.value.trim().toLowerCase()
@@ -88,6 +92,57 @@ watch(folderRows, (rows) => {
     if (!folderMap.value[row.resourceId]) folderMap.value[row.resourceId] = props.plan.targetFolders?.[0]?.folderId || ''
   })
 }, { immediate: true })
+
+function findFolder(value) {
+  return allFolders.value.find((folder) => folder.folderId === value || folder.folderName === String(value || '').trim())
+}
+
+function ensureTemporaryFolder(folderName) {
+  const folderId = `TEMP_FOLDER:${folderName}`
+  if (!temporaryFolders.value.some((folder) => folder.folderId === folderId)) {
+    temporaryFolders.value = [...temporaryFolders.value, { folderId, folderName, temporary: true }]
+  }
+  return folderId
+}
+
+function validateFolder(row) {
+  if (!showRuleFolders.value || row.resourceType !== 'RULE' || row.status === 'TERMINATE' || confirmChoice.value[row.resourceId] === 'ABANDON') {
+    delete folderErrors.value[row.resourceId]
+    return true
+  }
+
+  const rawValue = folderMap.value[row.resourceId]
+  const matchedFolder = findFolder(rawValue)
+  if (matchedFolder) {
+    folderMap.value[row.resourceId] = matchedFolder.folderId
+    delete folderErrors.value[row.resourceId]
+    return true
+  }
+
+  const folderName = String(rawValue || '').trim()
+  if (!folderName) {
+    folderErrors.value[row.resourceId] = '请输入或选择目标文件夹'
+    return false
+  }
+  if (existingFolderNames.value.has(folderName)) {
+    folderErrors.value[row.resourceId] = '文件夹名称已存在，请直接选择现有文件夹'
+    return false
+  }
+  if (!/^[\u4e00-\u9fa5A-Za-z0-9_]{1,33}$/.test(folderName)) {
+    folderErrors.value[row.resourceId] = '33位以内，仅支持中文、英文、数字、下划线'
+    return false
+  }
+
+  folderMap.value[row.resourceId] = ensureTemporaryFolder(folderName)
+  delete folderErrors.value[row.resourceId]
+  return true
+}
+
+function validateFoldersBeforeSubmit() {
+  return folderRows.value.every(validateFolder)
+}
+
+defineExpose({ validateFoldersBeforeSubmit })
 
 function collectDependencyConflicts(root) {
   const result = []
@@ -203,29 +258,47 @@ function nodeClass(data) {
                   </el-select>
                   <div v-if="confirmChoice[row.resourceId] === 'RENAME'" class="action-fields">
                     <el-input v-model="renameMap[row.resourceId]" placeholder="新编码" />
+                    <div v-if="showRuleFolders && row.resourceType === 'RULE'" class="folder-create-field">
+                      <el-select
+                        v-model="folderMap[row.resourceId]"
+                        filterable
+                        allow-create
+                        default-first-option
+                        placeholder="搜索或新建文件夹"
+                        :class="{ 'is-folder-error': folderErrors[row.resourceId] }"
+                        @change="validateFolder(row)"
+                      >
+                        <el-option-group label="现有文件夹">
+                          <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                        </el-option-group>
+                        <el-option-group v-if="temporaryFolders.length" label="本次新建">
+                          <el-option v-for="folder in temporaryFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                        </el-option-group>
+                      </el-select>
+                      <span v-if="folderErrors[row.resourceId]" class="folder-error">{{ folderErrors[row.resourceId] }}</span>
+                    </div>
+                  </div>
+                </template>
+                <template v-else>
+                  <div v-if="showRuleFolders && row.resourceType === 'RULE'" class="folder-create-field">
                     <el-select
-                      v-if="showRuleFolders && row.resourceType === 'RULE'"
                       v-model="folderMap[row.resourceId]"
                       filterable
                       allow-create
                       default-first-option
-                      placeholder="目标文件夹"
+                      placeholder="搜索或新建文件夹"
+                      :class="{ 'is-folder-error': folderErrors[row.resourceId] }"
+                      @change="validateFolder(row)"
                     >
-                      <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                      <el-option-group label="现有文件夹">
+                        <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                      </el-option-group>
+                      <el-option-group v-if="temporaryFolders.length" label="本次新建">
+                        <el-option v-for="folder in temporaryFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
+                      </el-option-group>
                     </el-select>
+                    <span v-if="folderErrors[row.resourceId]" class="folder-error">{{ folderErrors[row.resourceId] }}</span>
                   </div>
-                </template>
-                <template v-else>
-                  <el-select
-                    v-if="showRuleFolders && row.resourceType === 'RULE'"
-                    v-model="folderMap[row.resourceId]"
-                    filterable
-                    allow-create
-                    default-first-option
-                    placeholder="目标文件夹"
-                  >
-                    <el-option v-for="folder in plan.targetFolders" :key="folder.folderId" :label="folder.folderName" :value="folder.folderId" />
-                  </el-select>
                   <span v-else class="action-muted">无需用户处理</span>
                 </template>
               </div>
