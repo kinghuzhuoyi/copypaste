@@ -257,14 +257,18 @@ code { color: #64748b; background: #f1f5f9; border-radius: 5px; padding: 1px 5px
 }
 .lineage-table-head {
   display: grid;
-  grid-template-columns: 96px 82px 150px minmax(160px, 1fr) minmax(260px, 1.25fr);
-  gap: 12px;
+  grid-template-columns: 24px 126px 92px 126px minmax(190px, 1.15fr) minmax(230px, 1fr);
+  column-gap: 12px;
   align-items: center;
-  margin: 12px 0 6px 48px;
+  margin: 0;
   padding: 0 12px;
   color: #475569;
   font-size: 12px;
   font-weight: 700;
+}
+.lineage-head-spacer {
+  width: 24px;
+  min-width: 24px;
 }
 .lineage-tree {
   --el-tree-node-hover-bg-color: #f8fafc;
@@ -275,32 +279,45 @@ code { color: #64748b; background: #f1f5f9; border-radius: 5px; padding: 1px 5px
 }
 .lineage-tree .el-tree-node__content {
   min-height: 44px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: stretch;
   border-radius: 0;
   border-bottom: 1px solid #eef2f7;
-  padding-right: 12px;
+  padding: 0 12px !important;
 }
 .lineage-tree .el-tree-node:last-child > .el-tree-node__content {
   border-bottom: 0;
 }
 .lineage-tree .el-tree-node__expand-icon {
+  width: 24px;
+  height: 44px;
+  margin: 0;
   color: #94a3b8;
+}
+.lineage-tree .el-tree-node__content > .el-tree-node__expand-icon {
+  grid-column: 1;
+  align-self: center;
+}
+.lineage-tree .el-tree-node__content > .el-tree-node__label,
+.lineage-tree .el-tree-node__content > .lineage-node {
+  grid-column: 2;
 }
 .lineage-node {
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: 96px 82px 150px minmax(160px, 1fr) minmax(260px, 1.25fr);
-  gap: 12px;
+  grid-template-columns: 126px 92px 126px minmax(190px, 1.15fr) minmax(230px, 1fr);
+  column-gap: 12px;
   align-items: center;
   color: #24324a;
-  border-left: 3px solid transparent;
-  padding-left: 9px;
+  padding-left: 0;
 }
-.lineage-node.is-copy { border-left-color: #2f6fda; }
-.lineage-node.is-rename { border-left-color: #b7791f; }
-.lineage-node.is-reuse { border-left-color: #64748b; }
-.lineage-node.is-direct { border-left-color: #0f766e; }
-.lineage-node.is-terminate { border-left-color: #c2410c; }
+.lineage-action-cell {
+  min-width: 0;
+  padding-left: min(calc(var(--lineage-depth, 0) * 22px), 58px);
+}
 .lineage-node .el-tag {
   width: fit-content;
   min-width: 64px;
@@ -402,6 +419,7 @@ code { color: #64748b; background: #f1f5f9; border-radius: 5px; padding: 1px 5px
   padding-top: 12px;
   padding-bottom: 8px;
   background: #ffffff;
+  border-bottom: 1px solid #eef2f7;
   box-shadow: 0 8px 14px rgba(15, 23, 42, .06);
 }
 .lineage-body .lineage-table-head::before {

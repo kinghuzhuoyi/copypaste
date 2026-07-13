@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, ref, watch } from 'vue'
 import ResolutionTag from './ResolutionTag.vue'
 
@@ -258,16 +258,19 @@ function nodeClass(data) {
         </div>
         <div class="lineage-body">
           <div class="lineage-table-head">
+            <span class="lineage-head-spacer" aria-hidden="true"></span>
             <span>处理方式</span>
             <span>资源类型</span>
             <span>编码</span>
             <span>名称</span>
             <span>处理说明</span>
           </div>
-          <el-tree class="lineage-tree" :key="lineageTreeRenderKey" :data="filteredLineageTrees" node-key="nodeId" :default-expand-all="!!lineageKeyword || !!lineageAction" :indent="24" :props="{ children: 'children', label: 'resourceName' }">
-            <template #default="{ data }">
-              <div :class="nodeClass(data)">
-                <ResolutionTag :cat="data.action || 'COPY'" />
+          <el-tree class="lineage-tree" :key="lineageTreeRenderKey" :data="filteredLineageTrees" node-key="nodeId" :default-expand-all="!!lineageKeyword || !!lineageAction" :indent="0" :props="{ children: 'children', label: 'resourceName' }">
+            <template #default="{ node, data }">
+              <div :class="nodeClass(data)" :style="{ '--lineage-depth': `${node.level - 1}` }">
+                <div class="lineage-action-cell">
+                  <ResolutionTag :cat="data.action || 'COPY'" />
+                </div>
                 <span class="lineage-type">{{ data.resourceTypeDesc || typeLabel(data.resourceType) }}</span>
                 <code class="lineage-code" :title="data.resourceCode">{{ data.resourceCode }}</code>
                 <b class="lineage-name" :title="data.resourceName">{{ data.resourceName }}</b>

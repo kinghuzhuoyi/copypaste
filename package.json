@@ -1,21 +1,19 @@
 {
-    "name":  "resource-copy-app",
-    "version":  "0.1.0",
-    "private":  true,
-    "type":  "module",
-    "scripts":  {
-                    "dev":  "vite --host 0.0.0.0 --port 8102",
-                    "build":  "vite build",
-                    "preview":  "vite preview --host 0.0.0.0 --port 8103"
-                },
-    "dependencies":  {
-                         "@element-plus/icons-vue":  "latest",
-                         "@vitejs/plugin-vue":  "^5.2.1",
-                         "vite":  "^5.4.11",
-                         "vue":  "latest",
-                         "element-plus":  "latest"
-                     },
-    "devDependencies":  {
-
-                        }
+    "name": "resource-copy-app",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite --host 0.0.0.0 --port 8102",
+        "build": "vite build",
+        "preview": "vite preview --host 0.0.0.0 --port 8103"
+    },
+    "dependencies": {
+        "@element-plus/icons-vue": "latest",
+        "@vitejs/plugin-vue": "^5.2.1",
+        "axios": "^1.18.1",
+        "element-plus": "latest",
+        "vite": "^5.4.11",
+        "vue": "latest"
+    }
 }

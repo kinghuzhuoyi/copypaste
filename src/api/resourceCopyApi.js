@@ -1,3 +1,5 @@
+import axios from 'axios'
+
 const sleep = (ms = 120) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const env = import.meta.env || {}
@@ -7,20 +9,28 @@ const projectNameById = new Map()
 const flowNameByKey = new Map()
 const versionProcessKeyByVersion = new Map()
 
+const apiClient = axios.create({
+  baseURL: API_BASE_URL || window.location.origin,
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+})
+
 async function request(path, { method = 'GET', query, body, mockBody } = {}) {
   if (USE_MOCK_API) return mockRequest(path, { method, query, body: mockBody || body })
 
-  const url = new URL(`${API_BASE_URL}${path}`, window.location.origin)
-  Object.entries(query || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value)
-  })
-  const response = await fetch(url.toString(), {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  if (!response.ok) throw new Error(`接口请求失败：${response.status}`)
-  return response.json()
+  try {
+    const response = await apiClient.request({
+      url: path,
+      method,
+      params: query,
+      data: body,
+    })
+    return response.data
+  } catch (error) {
+    const status = error.response?.status
+    const message = error.response?.data?.message || error.message || 'unknown error'
+    throw new Error(status ? `接口请求失败：${status} ${message}` : `接口请求失败：${message}`)
+  }
 }
 
 const targetContext = {
